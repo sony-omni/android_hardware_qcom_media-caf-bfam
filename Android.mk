@@ -1,3 +1,4 @@
+ifeq ($(TARGET_QCOM_MEDIA_VARIANT),caf-bfam)
 QCOM_MEDIA_ROOT := $(call my-dir)
 $(warning target list is : $(MSM_VIDC_TARGET_LIST))
 
@@ -14,5 +15,5 @@ include $(QCOM_MEDIA_ROOT)/libc2dcolorconvert/Android.mk
 ifeq ($(TARGET_BOARD_PLATFORM),apq8084)
 include $(QCOM_MEDIA_ROOT)/videopp/Android.mk
 endif
-
+endif
 endif
