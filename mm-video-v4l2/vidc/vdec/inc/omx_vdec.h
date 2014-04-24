@@ -197,7 +197,7 @@ class VideoHeap : public MemoryHeapBase
 #define OMX_FRAMEPACK_EXTRADATA_SIZE ((sizeof(OMX_OTHER_EXTRADATATYPE) +\
             sizeof(OMX_QCOM_FRAME_PACK_ARRANGEMENT) + 3)&(~3))
 #define OMX_USERDATA_EXTRADATA_SIZE ((sizeof(OMX_OTHER_EXTRADATATYPE) +\
-            ((8*1024) + 3))&(~3)) /* 8 KB is the size that driver/FW considers as worst case size for userdata */
+            + 3)&(~3))
 
 //  Define next macro with required values to enable default extradata,
 //    VDEC_EXTRADATA_MB_ERROR_MAP
