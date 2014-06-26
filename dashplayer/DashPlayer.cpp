@@ -130,7 +130,6 @@ DashPlayer::DashPlayer()
       mScanSourcesPending(false),
       isSetSurfaceTexturePending(false),
       mScanSourcesGeneration(0),
-      mTimedTextType(TIMED_TEXT_UNKNOWN),
       mTimeDiscontinuityPending(false),
       mFlushingAudio(NONE),
       mFlushingVideo(NONE),
@@ -150,7 +149,8 @@ DashPlayer::DashPlayer()
       mBufferingNotification(false),
       mSRid(0),
       mTimedTextCEAPresent(false),
-      mTimedTextCEASamplesDisc(false){
+      mTimedTextCEASamplesDisc(false),
+      mQCTimedTextListenerPresent(false){
       mTrackName = new char[6];
 }
 
@@ -291,7 +291,7 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
     switch (msg->what()) {
         case kWhatSetDataSource:
         {
-            ALOGV("kWhatSetDataSource");
+            ALOGE("kWhatSetDataSource");
 
             CHECK(mSource == NULL);
 
@@ -372,7 +372,7 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
 
         case kWhatStart:
         {
-            ALOGV("kWhatStart");
+            ALOGE("kWhatStart");
 
             mVideoIsAVC = false;
             mAudioEOS = false;
@@ -556,7 +556,7 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
 
                 if(track == kVideo && mTimedTextCEAPresent)
                 {
-                  sendTextPacket(NULL, ERROR_END_OF_STREAM);
+                  sendTextPacket(NULL, ERROR_END_OF_STREAM, TIMED_TEXT_CEA);
                 }
 
                 if(mRenderer != NULL)
@@ -704,7 +704,7 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
 
                 if(track == kVideo && mTimedTextCEAPresent)
                 {
-                  sendTextPacket(NULL, (status_t)UNKNOWN_ERROR);
+                  sendTextPacket(NULL, (status_t)UNKNOWN_ERROR, TIMED_TEXT_CEA);
                 }
 
                 if(mRenderer != NULL)
@@ -804,7 +804,7 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
 
         case kWhatReset:
         {
-            ALOGV("kWhatReset");
+            ALOGE("kWhatReset");
             Mutex::Autolock autoLock(mLock);
 
             if (mRenderer != NULL) {
@@ -861,7 +861,7 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
             status_t nRet = OK;
             CHECK(msg->findInt64("seekTimeUs", &seekTimeUs));
 
-            ALOGW("kWhatSeek seekTimeUs=%lld us (%.2f secs)",
+            ALOGE("kWhatSeek seekTimeUs=%lld us (%.2f secs)",
                  seekTimeUs, seekTimeUs / 1E6);
 
             nRet = mSource->seekTo(seekTimeUs);
@@ -949,6 +949,7 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
 
         case kWhatPause:
         {
+            ALOGE("kWhatPause");
             CHECK(mRenderer != NULL);
             mRenderer->pause();
 
@@ -974,6 +975,7 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
 
         case kWhatResume:
           {
+            ALOGE("kWhatResume");
             if (mSourceType == kHttpDashSource) {
               bool disc = mSource->isPlaybackDiscontinued();
               status_t status = OK;
@@ -986,7 +988,7 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
                 {
                   int64_t seekTimeUs = (int64_t)nMin * 1000ll;
 
-                  ALOGV("kWhatSeek seekTimeUs=%lld us (%.2f secs)", seekTimeUs, seekTimeUs / 1E6);
+                  ALOGE("kWhatSeek seekTimeUs=%lld us (%.2f secs)", seekTimeUs, seekTimeUs / 1E6);
 
                   status = mSource->seekTo(seekTimeUs);
                   if (status == OK)
@@ -1082,6 +1084,8 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
                 ALOGE("Source is null in prepareAsync\n");
                 break;
             }
+
+            ALOGE("kWhatPrepareAsync");
             mSource->prepareAsync();
             postIsPrepareDone();
             break;
@@ -1103,6 +1107,7 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
                         driver->notifyDuration(durationUs);
                     }
                 }
+                ALOGE("PrepareDone complete\n");
                 notifyListener(MEDIA_PREPARED, 0, 0);
             } else if(err == -EWOULDBLOCK) {
                 msg->post(100000ll);
@@ -1315,7 +1320,7 @@ void DashPlayer::finishFlushIfPossible() {
     mFlushingVideo = NONE;
 
     if (mResetInProgress) {
-        ALOGV("reset completed");
+        ALOGE("reset completed");
 
         mResetInProgress = false;
         finishReset();
@@ -1503,17 +1508,6 @@ status_t DashPlayer::instantiateDecoder(int track, sp<Decoder> *decoder) {
     if( track == kAudio || track == kVideo) {
         (*decoder)->configure(meta);
     }
-    else {
-      const char *mime;
-      CHECK(meta->findCString(kKeyMIMEType, &mime));
-
-      if(!strcasecmp(MEDIA_MIMETYPE_TEXT_3GPP, mime))
-      {
-        //Currently we only support SMPTE-TT for 3GPP mime type. Needs to be updated when other timedtext types are added (like WebVTT, SRT)
-        mTimedTextType = TIMED_TEXT_SMPTE;
-      }
-    }
-
 
     int64_t durationUs;
     if (mDriver != NULL && mSource->getDuration(&durationUs) == OK) {
@@ -1883,10 +1877,9 @@ void DashPlayer::renderBuffer(bool audio, const sp<AMessage> &msg) {
                     if(!mTimedTextCEAPresent)
                     {
                       mTimedTextCEAPresent = true;
-                      mTimedTextType = TIMED_TEXT_CEA;
                     }
 
-                    sendTextPacket(accessUnit, OK);
+                    sendTextPacket(accessUnit, OK, TIMED_TEXT_CEA);
 
                     accessUnit = NULL;
                     break;
@@ -2160,8 +2153,13 @@ void DashPlayer::postIsPrepareDone()
     }
     msg->post();
 }
-void DashPlayer::sendTextPacket(sp<ABuffer> accessUnit,status_t err)
+void DashPlayer::sendTextPacket(sp<ABuffer> accessUnit,status_t err, TimedTextType eTimedTextType)
 {
+    if(!mQCTimedTextListenerPresent)
+{
+      return;
+    }
+
     Parcel parcel;
     int mFrameType = TIMED_TEXT_FLAG_FRAME;
 
@@ -2170,11 +2168,12 @@ void DashPlayer::sendTextPacket(sp<ABuffer> accessUnit,status_t err)
 
     parcel.writeInt32(KEY_TEXT_FORMAT);
     // UPDATE TIMEDTEXT SAMPLE TYPE
-    if(mTimedTextType == TIMED_TEXT_SMPTE)
+    //Currently dash only support SMPTE-TT and CEA formats. No support for other timedtext types (like WebVTT, SRT)
+    if(eTimedTextType == TIMED_TEXT_SMPTE)
     {
       parcel.writeString16((String16)"smptett");
     }
-    else if(mTimedTextType == TIMED_TEXT_CEA)
+    else if(eTimedTextType == TIMED_TEXT_CEA)
     {
       parcel.writeString16((String16)"cea");
     }
@@ -2184,6 +2183,7 @@ void DashPlayer::sendTextPacket(sp<ABuffer> accessUnit,status_t err)
     }
 
     // UPDATE TIMEDTEXT SAMPLE FLAGS
+    parcel.writeInt32(KEY_TEXT_FLAG_TYPE);
     if (err == ERROR_END_OF_STREAM ||
         err == (status_t)UNKNOWN_ERROR)
     {
@@ -2214,7 +2214,7 @@ void DashPlayer::sendTextPacket(sp<ABuffer> accessUnit,status_t err)
       if(bDisc == 1)
       {
         ALOGV("sendTextPacket signal discontinuity");
-        parcel.writeInt32(TIMED_TEXT_FLAG_DISCONTINUITY);
+        parcel.writeInt32(KEY_TEXT_DISCONTINUITY);
       }
 
     // UPDATE TIMEDTEXT SAMPLE TEXT DATA
@@ -2327,6 +2327,12 @@ status_t DashPlayer::dump(int fd, const Vector<String16> &args)
     }
 
     return OK;
+}
+
+void DashPlayer::setQCTimedTextListener(const bool val)
+{
+  mQCTimedTextListenerPresent = val;
+  ALOGE("QCTimedtextlistener turned %s", mQCTimedTextListenerPresent ? "ON" : "OFF");
 }
 
 void DashPlayer::processDeferredActions() {
