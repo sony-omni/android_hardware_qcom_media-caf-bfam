@@ -39,6 +39,9 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //                             Include Files
 //////////////////////////////////////////////////////////////////////////////
 
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
+
 #include <string.h>
 #include <pthread.h>
 #include <sys/prctl.h>
@@ -571,7 +574,9 @@ omx_vdec::omx_vdec(): m_error_propogated(false),
     secure_mode(false),
     m_profile(0),
     client_set_fps(false),
-    m_last_rendered_TS(-1)
+    ignore_not_coded_vops(true),
+    m_last_rendered_TS(-1),
+    m_queued_codec_config_count(0)
 {
     /* Assumption is that , to begin with , we have all the frames with decoder */
     DEBUG_PRINT_HIGH("In OMX vdec Constructor");
@@ -658,6 +663,7 @@ omx_vdec::omx_vdec(): m_error_propogated(false),
     pthread_mutex_init(&m_lock, NULL);
     pthread_mutex_init(&c_lock, NULL);
     sem_init(&m_cmd_lock,0,0);
+    sem_init(&m_safe_flush, 0, 0);
     streaming[CAPTURE_PORT] =
         streaming[OUTPUT_PORT] = false;
 #ifdef _ANDROID_
@@ -1617,6 +1623,7 @@ OMX_ERRORTYPE omx_vdec::component_init(OMX_STRING role)
         drv_ctx.decoder_format = VDEC_CODECTYPE_MPEG4;
         eCompressionFormat = OMX_VIDEO_CodingMPEG4;
         output_capability=V4L2_PIX_FMT_MPEG4;
+        ignore_not_coded_vops = false;
         /*Initialize Start Code for MPEG4*/
         codec_type_parse = CODEC_TYPE_MPEG4;
         m_frame_parser.init_start_codes (codec_type_parse);
@@ -1647,6 +1654,7 @@ OMX_ERRORTYPE omx_vdec::component_init(OMX_STRING role)
         output_capability = V4L2_PIX_FMT_DIVX_311;
         eCompressionFormat = (OMX_VIDEO_CODINGTYPE)QOMX_VIDEO_CodingDivx;
         codec_type_parse = CODEC_TYPE_DIVX;
+        ignore_not_coded_vops = true;
         m_frame_parser.init_start_codes (codec_type_parse);
 
         eRet = createDivxDrmContext();
@@ -1663,6 +1671,7 @@ OMX_ERRORTYPE omx_vdec::component_init(OMX_STRING role)
         eCompressionFormat = (OMX_VIDEO_CODINGTYPE)QOMX_VIDEO_CodingDivx;
         codec_type_parse = CODEC_TYPE_DIVX;
         codec_ambiguous = true;
+        ignore_not_coded_vops = true;
         m_frame_parser.init_start_codes (codec_type_parse);
 
         eRet = createDivxDrmContext();
@@ -1679,6 +1688,7 @@ OMX_ERRORTYPE omx_vdec::component_init(OMX_STRING role)
         eCompressionFormat = (OMX_VIDEO_CODINGTYPE)QOMX_VIDEO_CodingDivx;
         codec_type_parse = CODEC_TYPE_DIVX;
         codec_ambiguous = true;
+        ignore_not_coded_vops = true;
         m_frame_parser.init_start_codes (codec_type_parse);
 
         eRet = createDivxDrmContext();
@@ -2010,6 +2020,7 @@ OMX_ERRORTYPE  omx_vdec::send_command(OMX_IN OMX_HANDLETYPE hComp,
                 "to invalid port: %lu", param1);
         return OMX_ErrorBadPortIndex;
     }
+
     post_event((unsigned)cmd,(unsigned)param1,OMX_COMPONENT_GENERATE_COMMAND);
     sem_wait(&m_cmd_lock);
     DEBUG_PRINT_LOW("send_command: Command Processed");
@@ -2342,6 +2353,22 @@ OMX_ERRORTYPE  omx_vdec::send_command_proxy(OMX_IN OMX_HANDLETYPE hComp,
 #ifdef _MSM8974_
         send_codec_config();
 #endif
+        if (cmd == OMX_CommandFlush && (param1 == OMX_CORE_INPUT_PORT_INDEX ||
+                    param1 == OMX_ALL)) {
+            while (android_atomic_add(0, &m_queued_codec_config_count) > 0) {
+               struct timespec ts;
+
+               clock_gettime(CLOCK_REALTIME, &ts);
+               ts.tv_sec += 2;
+               DEBUG_PRINT_LOW("waiting for %d EBDs of CODEC CONFIG buffers ",
+                       m_queued_codec_config_count);
+               if (sem_timedwait(&m_safe_flush, &ts)) {
+                   DEBUG_PRINT_ERROR("Failed to wait for EBDs of CODEC CONFIG buffers");
+                   break;
+               }
+            }
+        }
+
         if (OMX_CORE_INPUT_PORT_INDEX == param1 || OMX_ALL == param1) {
             BITMASK_SET(&m_flags, OMX_COMPONENT_INPUT_FLUSH_PENDING);
         }
@@ -2968,6 +2995,12 @@ OMX_ERRORTYPE  omx_vdec::get_parameter(OMX_IN OMX_HANDLETYPE     hComp,
                                     break;
 #endif
 
+        case OMX_QcomIndexParamVideoProcessNotCodedVOP:
+        {
+            DEBUG_PRINT_LOW("get_parameter: OMX_QcomIndexParamVideoProcessNotCodedVOP");
+            ((QOMX_ENABLETYPE *)paramData)->bEnable = (OMX_BOOL)!ignore_not_coded_vops;
+            break;
+        }
         default: {
                  DEBUG_PRINT_ERROR("get_parameter: unknown param %08x", paramIndex);
                  eRet =OMX_ErrorUnsupportedIndex;
@@ -3392,7 +3425,8 @@ OMX_ERRORTYPE  omx_vdec::set_parameter(OMX_IN OMX_HANDLETYPE     hComp,
                                           eRet = OMX_ErrorUnsupportedSetting;
                                       }
                                   } else if ((!strncmp(drv_ctx.kind, "OMX.qcom.video.decoder.divx",OMX_MAX_STRINGNAME_SIZE)) ||
-                                          (!strncmp(drv_ctx.kind, "OMX.qcom.video.decoder.divx311",OMX_MAX_STRINGNAME_SIZE))
+                                          (!strncmp(drv_ctx.kind, "OMX.qcom.video.decoder.divx311", OMX_MAX_STRINGNAME_SIZE)) ||
+                                          (!strncmp(drv_ctx.kind, "OMX.qcom.video.decoder.divx4", OMX_MAX_STRINGNAME_SIZE))
                                         ) {
                                       if (!strncmp((const char*)comp_role->cRole,"video_decoder.divx",OMX_MAX_STRINGNAME_SIZE)) {
                                           strlcpy((char*)m_cRole,"video_decoder.divx",OMX_MAX_STRINGNAME_SIZE);
@@ -3772,6 +3806,12 @@ OMX_ERRORTYPE  omx_vdec::set_parameter(OMX_IN OMX_HANDLETYPE     hComp,
                 DEBUG_PRINT_ERROR("ERROR: Custom buffer size in not supported on output port");
                 eRet = OMX_ErrorBadParameter;
             }
+            break;
+        }
+        case OMX_QcomIndexParamVideoProcessNotCodedVOP:
+        {
+            DEBUG_PRINT_LOW("set_parameter: OMX_QcomIndexParamVideoProcessNotCodedVOP");
+            ignore_not_coded_vops = !((QOMX_ENABLETYPE *)paramData)->bEnable;
             break;
         }
         default: {
@@ -4746,6 +4786,15 @@ OMX_ERRORTYPE omx_vdec::free_output_buffer(OMX_BUFFERHEADERTYPE *bufferHdr)
                 sizeof (vdec_bufferpayload));
 
         if (!dynamic_buf_mode) {
+
+            if (streaming[CAPTURE_PORT]) {
+                if (stream_off(OMX_CORE_OUTPUT_PORT_INDEX)) {
+                    DEBUG_PRINT_ERROR("STREAMOFF Failed");
+                } else {
+                    DEBUG_PRINT_HIGH("STREAMOFF Successful");
+                }
+            }
+
 #ifdef _ANDROID_
             if (m_enable_android_native_buffers) {
                 if (!secure_mode) {
@@ -5742,7 +5791,9 @@ OMX_ERRORTYPE  omx_vdec::empty_this_buffer_proxy(OMX_IN OMX_HANDLETYPE         h
     }
 
 
-    if (codec_type_parse == CODEC_TYPE_MPEG4 || codec_type_parse == CODEC_TYPE_DIVX) {
+    if (ignore_not_coded_vops &&
+            (codec_type_parse == CODEC_TYPE_MPEG4 ||
+             codec_type_parse == CODEC_TYPE_DIVX)) {
         mp4StreamType psBits;
         psBits.data = (unsigned char *)(buffer->pBuffer + buffer->nOffset);
         psBits.numBytes = buffer->nFilledLen;
@@ -5910,6 +5961,11 @@ if (buffer->nFlags & QOMX_VIDEO_BUFFERFLAG_EOSEQ) {
         DEBUG_PRINT_ERROR("Failed to qbuf Input buffer to driver");
         return OMX_ErrorHardware;
     }
+
+    if (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG) {
+        android_atomic_inc(&m_queued_codec_config_count);
+    }
+
     if (codec_config_flag && !(buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG)) {
         codec_config_flag = false;
     }
@@ -5961,6 +6017,7 @@ if (buffer->nFlags & QOMX_VIDEO_BUFFERFLAG_EOSEQ) {
 OMX_ERRORTYPE  omx_vdec::fill_this_buffer(OMX_IN OMX_HANDLETYPE  hComp,
         OMX_IN OMX_BUFFERHEADERTYPE* buffer)
 {
+    unsigned nPortIndex = 0;
     if (dynamic_buf_mode) {
         private_handle_t *handle = NULL;
         struct VideoDecoderOutputMetaData *meta;
@@ -6006,8 +6063,11 @@ OMX_ERRORTYPE  omx_vdec::fill_this_buffer(OMX_IN OMX_HANDLETYPE  hComp,
         return OMX_ErrorIncorrectStateOperation;
     }
 
+    nPortIndex = buffer - client_buffers.get_il_buf_hdr();
     if (buffer == NULL ||
-            ((buffer - client_buffers.get_il_buf_hdr()) >= (int)drv_ctx.op_buf.actualcount)) {
+            (nPortIndex >= drv_ctx.op_buf.actualcount)) {
+        DEBUG_PRINT_ERROR("FTB: ERROR: invalid buffer index, nPortIndex %u bufCount %u",
+            nPortIndex, drv_ctx.op_buf.actualcount);
         return OMX_ErrorBadParameter;
     }
 
@@ -6048,8 +6108,11 @@ OMX_ERRORTYPE  omx_vdec::fill_this_buffer_proxy(
 
     nPortIndex = buffer-((OMX_BUFFERHEADERTYPE *)client_buffers.get_il_buf_hdr());
 
-    if (bufferAdd == NULL || nPortIndex > drv_ctx.op_buf.actualcount)
+    if (bufferAdd == NULL || nPortIndex > drv_ctx.op_buf.actualcount) {
+        DEBUG_PRINT_ERROR("FTBProxy: ERROR: invalid buffer index, nPortIndex %u bufCount %u",
+            nPortIndex, drv_ctx.op_buf.actualcount);
         return OMX_ErrorBadParameter;
+    }
 
     DEBUG_PRINT_LOW("FTBProxy: bufhdr = %p, bufhdr->pBuffer = %p",
             bufferAdd, bufferAdd->pBuffer);
@@ -6881,13 +6944,8 @@ OMX_ERRORTYPE omx_vdec::fill_buffer_done(OMX_HANDLETYPE hComp,
         OMX_U32 buf_index = buffer - m_out_mem_ptr;
         BufferDim_t dim;
         private_handle_t *private_handle = NULL;
-        if (is_down_scalar_enabled) {
-            dim.sliceWidth = framesize.nWidth;
-            dim.sliceHeight = framesize.nHeight;
-        } else {
-             dim.sliceWidth = drv_ctx.video_resolution.frame_width;
-             dim.sliceHeight = drv_ctx.video_resolution.frame_height;
-        }
+        dim.sliceWidth = framesize.nWidth;
+        dim.sliceHeight = framesize.nHeight;
         if (native_buffer[buf_index].privatehandle)
             private_handle = native_buffer[buf_index].privatehandle;
         if (private_handle) {
@@ -6913,6 +6971,19 @@ OMX_ERRORTYPE omx_vdec::empty_buffer_done(OMX_HANDLETYPE         hComp,
     DEBUG_PRINT_LOW("empty_buffer_done: bufhdr = %p, bufhdr->pBuffer = %p",
             buffer, buffer->pBuffer);
     pending_input_buffers--;
+    if (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG) {
+        int pending_flush_waiters;
+
+        while (pending_flush_waiters = INT_MAX,
+                sem_getvalue(&m_safe_flush, &pending_flush_waiters),
+                /* 0 == there /are/ waiters depending on POSIX implementation */
+                pending_flush_waiters <= 0 ) {
+            DEBUG_PRINT_LOW("sem post for %d EBD of CODEC CONFIG buffer", m_queued_codec_config_count);
+            sem_post(&m_safe_flush);
+        }
+
+        android_atomic_and(0, &m_queued_codec_config_count); /* no clearer way to set to 0 */
+    }
 
     if (arbitrary_bytes) {
         if (pdest_frame == NULL && input_flush_progress == false) {
@@ -7594,7 +7665,8 @@ OMX_ERRORTYPE omx_vdec::push_input_h264 (OMX_HANDLETYPE hComp)
                                      h264_scratch.pBuffer,h264_scratch.nFilledLen);
                              pdest_frame->nFilledLen += h264_scratch.nFilledLen;
                              h264_scratch.nFilledLen = 0;
-                             pdest_frame->nTimeStamp = h264_last_au_ts;
+                             if (h264_last_au_ts != LLONG_MAX)
+                                 pdest_frame->nTimeStamp = h264_last_au_ts;
                         } else {
                             /* Completely new frame, let's just push what
                              * we have now.  The resulting EBD would trigger
@@ -8236,7 +8308,7 @@ OMX_ERRORTYPE omx_vdec::allocate_output_headers()
                 sizeof(OMX_BUFFERHEADERTYPE),
                 nPMEMInfoSize,
                 nPlatformListSize);
-        DEBUG_PRINT_LOW("PE %d bmSize %d",nPlatformEntrySize,
+        DEBUG_PRINT_LOW("PE %d bmSize %"PRId64, nPlatformEntrySize,
                 m_out_bm_count);
         m_out_mem_ptr = (OMX_BUFFERHEADERTYPE  *)calloc(nBufHdrSize,1);
         // Alloc mem for platform specific info
@@ -8460,8 +8532,13 @@ void omx_vdec::adjust_timestamp(OMX_S64 &act_timestamp)
             act_timestamp = prev_ts + frm_int;
             DEBUG_PRINT_LOW("adjust_timestamp: predicted ts[%lld]", act_timestamp);
             prev_ts = act_timestamp;
-        } else
+        } else {
+            if (drv_ctx.picture_order == VDEC_ORDER_DISPLAY && act_timestamp < prev_ts) {
+                // ensure that timestamps can never step backwards when in display order
+                act_timestamp = prev_ts;
+            }
             set_frame_rate(act_timestamp);
+        }
     } else if (frm_int > 0)          // In this case the frame rate was set along
     {                               // with the port definition, start ts with 0
         act_timestamp = prev_ts = 0;  // and correct if a valid ts is received.
@@ -9482,16 +9559,17 @@ OMX_BUFFERHEADERTYPE* omx_vdec::allocate_color_convert_buf::get_il_buf_hdr()
             status = c2d.convert(omx->drv_ctx.ptr_outputbuffer[index].pmem_fd,
                     omx->m_out_mem_ptr->pBuffer, bufadd->pBuffer, pmem_fd[index],
                     pmem_baseaddress[index], pmem_baseaddress[index]);
-            pthread_mutex_unlock(&omx->c_lock);
             if (!status) {
                 DEBUG_PRINT_ERROR("Failed color conversion %d", status);
                 m_out_mem_ptr_client[index].nFilledLen = 0;
+                pthread_mutex_unlock(&omx->c_lock);
                 return &m_out_mem_ptr_client[index];
             } else {
                 unsigned int filledLen = 0;
                 c2d.get_output_filled_length(filledLen);
                 m_out_mem_ptr_client[index].nFilledLen = filledLen;
             }
+            pthread_mutex_unlock(&omx->c_lock);
         } else
             m_out_mem_ptr_client[index].nFilledLen = 0;
         return &m_out_mem_ptr_client[index];
