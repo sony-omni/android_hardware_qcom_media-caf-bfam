@@ -485,11 +485,7 @@ enum OMX_QCOM_EXTN_INDEXTYPE
     /* Max Hierarchical P layers */
     OMX_QcomIndexMaxHierarchicallayers = 0x7F000041,
 
-    /* Set Encoder Performance Index */
-    OMX_QcomIndexConfigVideoVencPerfMode = 0x7F000042,
-
-    /* Set Hybrid Hier-p layers */
-    OMX_QcomIndexParamVideoHybridHierpMode = 0x7F000043,
+    OMX_QcomIndexParamVideoProcessNotCodedVOP = 0x7F00003D,
 };
 
 /**
@@ -1386,12 +1382,6 @@ typedef struct QOMX_INDEXDOWNSCALAR {
         OMX_BOOL bEnable;
 } QOMX_INDEXDOWNSCALAR;
 
-typedef struct QOMX_VIDEO_CUSTOM_BUFFERSIZE {
-        OMX_U32 nSize;
-        OMX_VERSIONTYPE nVersion;
-        OMX_U32 nPortIndex;
-        OMX_U32 nBufferSize;
-} QOMX_VIDEO_CUSTOM_BUFFERSIZE;
 
 #define OMX_QCOM_INDEX_PARAM_VIDEO_SYNCFRAMEDECODINGMODE "OMX.QCOM.index.param.video.SyncFrameDecodingMode"
 #define OMX_QCOM_INDEX_PARAM_INDEXEXTRADATA "OMX.QCOM.index.param.IndexExtraData"
