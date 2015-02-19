@@ -102,12 +102,14 @@ libmm-venc-inc      += hardware/qcom/media-caf-bfam/libc2dcolorconvert
 libmm-venc-inc      += hardware/qcom/display-caf-bfam/libcopybit
 libmm-venc-inc      += frameworks/av/include/media/stagefright
 libmm-venc-inc      += $(TARGET_OUT_HEADERS)/qcom/display-caf-bfam/
+libmm-venc-inc      += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
 
 LOCAL_MODULE                    := libOmxVenc
 LOCAL_MODULE_TAGS               := optional
 LOCAL_CFLAGS                    := $(libmm-venc-def)
 LOCAL_C_INCLUDES                := $(libmm-venc-inc)
 
+LOCAL_ADDITIONAL_DEPENDENCIES   := $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr
 LOCAL_PRELINK_MODULE      := false
 LOCAL_SHARED_LIBRARIES    := liblog libutils libbinder libcutils \
                              libc2dcolorconvert libdl
@@ -138,6 +140,7 @@ mm-venc-test720p-inc            += $(OMX_VIDEO_PATH)/vidc/common/inc
 mm-venc-test720p-inc            += hardware/qcom/media-caf-bfam/mm-core/inc
 mm-venc-test720p-inc            += hardware/qcom/display-caf-bfam/libgralloc
 mm-venc-test720p-inc            += $(venc-inc)
+mm-venc-test720p-inc            += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
 
 LOCAL_MODULE                    := mm-venc-omx-test720p
 LOCAL_MODULE_TAGS               := optional
@@ -163,6 +166,7 @@ include $(CLEAR_VARS)
 venc-test-inc                   += $(LOCAL_PATH)/inc
 venc-test-inc                   += hardware/qcom/display-caf-bfam/libgralloc
 venc-test-inc                   += $(venc-inc)
+venc-test-inc                   += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
 
 LOCAL_MODULE                    := mm-video-encdrv-test
 LOCAL_MODULE_TAGS               := optional
@@ -182,4 +186,3 @@ endif #BUILD_TINY_ANDROID
 # ---------------------------------------------------------------------------------
 # 					END
 # ---------------------------------------------------------------------------------
-
