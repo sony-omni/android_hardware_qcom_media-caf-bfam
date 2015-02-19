@@ -127,7 +127,7 @@ libmm-vdec-inc      += $(TARGET_OUT_HEADERS)/mm-video/SwVdec
 
 ifeq ($(PLATFORM_SDK_VERSION), 18)  #JB_MR2
 libOmxVdec-def += -DANDROID_JELLYBEAN_MR2=1
-libmm-vdec-inc += hardware/qcom/mediai-caf-bfam/libstagefrighthw
+libmm-vdec-inc += hardware/qcom/media-caf-bfam/libstagefrighthw
 endif
 libmm-vdec-inc      += $(TARGET_OUT_HEADERS)/qcom/display-caf-bfam/
 
