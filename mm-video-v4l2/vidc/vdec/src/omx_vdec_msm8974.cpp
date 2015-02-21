@@ -4786,15 +4786,14 @@ OMX_ERRORTYPE omx_vdec::free_output_buffer(OMX_BUFFERHEADERTYPE *bufferHdr)
                 sizeof (vdec_bufferpayload));
 
         if (!dynamic_buf_mode) {
-
-            if (streaming[CAPTURE_PORT]) {
+            if (streaming[CAPTURE_PORT] &&
+                !(in_reconfig || BITMASK_PRESENT(&m_flags,OMX_COMPONENT_OUTPUT_FLUSH_PENDING))) {
                 if (stream_off(OMX_CORE_OUTPUT_PORT_INDEX)) {
                     DEBUG_PRINT_ERROR("STREAMOFF Failed");
                 } else {
-                    DEBUG_PRINT_HIGH("STREAMOFF Successful");
+                    DEBUG_PRINT_LOW("STREAMOFF Successful");
                 }
             }
-
 #ifdef _ANDROID_
             if (m_enable_android_native_buffers) {
                 if (!secure_mode) {
@@ -5956,14 +5955,15 @@ if (buffer->nFlags & QOMX_VIDEO_BUFFERFLAG_EOSEQ) {
     buf.flags |= (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG) ? V4L2_QCOM_BUF_FLAG_CODECCONFIG: 0;
     buf.flags |= (buffer->nFlags & OMX_BUFFERFLAG_DECODEONLY) ? V4L2_QCOM_BUF_FLAG_DECODEONLY: 0;
 
+    if (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG) {
+        DEBUG_PRINT_LOW("Increment codec_config buffer counter");
+        android_atomic_inc(&m_queued_codec_config_count);
+    }
+
     rc = ioctl(drv_ctx.video_driver_fd, VIDIOC_QBUF, &buf);
     if (rc) {
         DEBUG_PRINT_ERROR("Failed to qbuf Input buffer to driver");
         return OMX_ErrorHardware;
-    }
-
-    if (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG) {
-        android_atomic_inc(&m_queued_codec_config_count);
     }
 
     if (codec_config_flag && !(buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG)) {
@@ -6971,19 +6971,6 @@ OMX_ERRORTYPE omx_vdec::empty_buffer_done(OMX_HANDLETYPE         hComp,
     DEBUG_PRINT_LOW("empty_buffer_done: bufhdr = %p, bufhdr->pBuffer = %p",
             buffer, buffer->pBuffer);
     pending_input_buffers--;
-    if (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG) {
-        int pending_flush_waiters;
-
-        while (pending_flush_waiters = INT_MAX,
-                sem_getvalue(&m_safe_flush, &pending_flush_waiters),
-                /* 0 == there /are/ waiters depending on POSIX implementation */
-                pending_flush_waiters <= 0 ) {
-            DEBUG_PRINT_LOW("sem post for %d EBD of CODEC CONFIG buffer", m_queued_codec_config_count);
-            sem_post(&m_safe_flush);
-        }
-
-        android_atomic_and(0, &m_queued_codec_config_count); /* no clearer way to set to 0 */
-    }
 
     if (arbitrary_bytes) {
         if (pdest_frame == NULL && input_flush_progress == false) {
@@ -7086,6 +7073,21 @@ int omx_vdec::async_message_process (void *context, void* message)
             if (v4l2_buf_ptr->flags & V4L2_QCOM_BUF_DATA_CORRUPT) {
                 vdec_msg->status_code = VDEC_S_INPUT_BITSTREAM_ERR;
             }
+            if (omxhdr->nFlags & OMX_BUFFERFLAG_CODECCONFIG) {
+                int pending_flush_waiters;
+
+                while (pending_flush_waiters = INT_MAX,
+                    sem_getvalue(&omx->m_safe_flush, &pending_flush_waiters),
+                    /* 0 == there /are/ waiters depending on POSIX implementation */
+                    pending_flush_waiters <= 0 ) {
+                    DEBUG_PRINT_LOW("sem post for %d EBD of CODEC CONFIG buffer",
+                        omx->m_queued_codec_config_count);
+                    sem_post(&omx->m_safe_flush);
+                }
+                DEBUG_PRINT_LOW("Reset codec_config buffer counter");
+                android_atomic_and(0, &omx->m_queued_codec_config_count); /* no clearer way to set to 0 */
+            }
+
             omx->post_event ((unsigned int)omxhdr,vdec_msg->status_code,
                     OMX_COMPONENT_GENERATE_EBD);
             break;
@@ -8524,9 +8526,8 @@ void omx_vdec::adjust_timestamp(OMX_S64 &act_timestamp)
         rst_prev_ts = false;
     } else if (VALID_TS(prev_ts)) {
         bool codec_cond = (drv_ctx.timestamp_adjust)?
-            (!VALID_TS(act_timestamp) || (((act_timestamp > prev_ts)?
-                               (act_timestamp - prev_ts):(prev_ts - act_timestamp)) <= 2000)):
-            (!VALID_TS(act_timestamp) || act_timestamp == prev_ts);
+            (!VALID_TS(act_timestamp) || act_timestamp < prev_ts || llabs(act_timestamp - prev_ts) <= 2000) :
+            (!VALID_TS(act_timestamp) || act_timestamp <= prev_ts);
         if (frm_int > 0 && codec_cond) {
             DEBUG_PRINT_LOW("adjust_timestamp: original ts[%lld]", act_timestamp);
             act_timestamp = prev_ts + frm_int;
