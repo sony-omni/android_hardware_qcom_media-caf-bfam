@@ -568,7 +568,8 @@ omx_vdec::omx_vdec(): m_error_propogated(false),
     m_profile(0),
     client_set_fps(false),
     ignore_not_coded_vops(true),
-    m_last_rendered_TS(-1)
+    m_last_rendered_TS(-1),
+    m_queued_codec_config_count(0)
 {
     /* Assumption is that , to begin with , we have all the frames with decoder */
     DEBUG_PRINT_HIGH("In OMX vdec Constructor");
@@ -654,6 +655,7 @@ omx_vdec::omx_vdec(): m_error_propogated(false),
     pthread_mutex_init(&m_lock, NULL);
     pthread_mutex_init(&c_lock, NULL);
     sem_init(&m_cmd_lock,0,0);
+    sem_init(&m_safe_flush, 0, 0);
     streaming[CAPTURE_PORT] =
         streaming[OUTPUT_PORT] = false;
 #ifdef _ANDROID_
@@ -2001,6 +2003,7 @@ OMX_ERRORTYPE  omx_vdec::send_command(OMX_IN OMX_HANDLETYPE hComp,
                 "to invalid port: %lu", param1);
         return OMX_ErrorBadPortIndex;
     }
+
     post_event((unsigned)cmd,(unsigned)param1,OMX_COMPONENT_GENERATE_COMMAND);
     sem_wait(&m_cmd_lock);
     DEBUG_PRINT_LOW("send_command: Command Processed");
@@ -2333,6 +2336,23 @@ OMX_ERRORTYPE  omx_vdec::send_command_proxy(OMX_IN OMX_HANDLETYPE hComp,
 #ifdef _MSM8974_
         send_codec_config();
 #endif
+        if (cmd == OMX_CommandFlush && (param1 == OMX_CORE_INPUT_PORT_INDEX ||
+                    param1 == OMX_ALL)) {
+            if (android_atomic_add(0, &m_queued_codec_config_count) > 0) {
+               struct timespec ts;
+
+               clock_gettime(CLOCK_REALTIME, &ts);
+               ts.tv_sec += 2;
+               DEBUG_PRINT_LOW("waiting for %d EBDs of CODEC CONFIG buffers ",
+                       m_queued_codec_config_count);
+               BITMASK_SET(&m_flags, OMX_COMPONENT_FLUSH_DEFERRED);
+               if (sem_timedwait(&m_safe_flush, &ts)) {
+                   DEBUG_PRINT_ERROR("Failed to wait for EBDs of CODEC CONFIG buffers");
+               }
+               BITMASK_CLEAR (&m_flags,OMX_COMPONENT_FLUSH_DEFERRED);
+            }
+        }
+
         if (OMX_CORE_INPUT_PORT_INDEX == param1 || OMX_ALL == param1) {
             BITMASK_SET(&m_flags, OMX_COMPONENT_INPUT_FLUSH_PENDING);
         }
@@ -5876,11 +5896,17 @@ if (buffer->nFlags & QOMX_VIDEO_BUFFERFLAG_EOSEQ) {
     buf.flags |= (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG) ? V4L2_QCOM_BUF_FLAG_CODECCONFIG: 0;
     buf.flags |= (buffer->nFlags & OMX_BUFFERFLAG_DECODEONLY) ? V4L2_QCOM_BUF_FLAG_DECODEONLY: 0;
 
+    if (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG) {
+        DEBUG_PRINT_LOW("Increment codec_config buffer counter");
+        android_atomic_inc(&m_queued_codec_config_count);
+    }
+
     rc = ioctl(drv_ctx.video_driver_fd, VIDIOC_QBUF, &buf);
     if (rc) {
         DEBUG_PRINT_ERROR("Failed to qbuf Input buffer to driver");
         return OMX_ErrorHardware;
     }
+
     if (codec_config_flag && !(buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG)) {
         codec_config_flag = false;
     }
@@ -6970,6 +6996,7 @@ int omx_vdec::async_message_process (void *context, void* message)
                     ((omxhdr - omx->m_inp_mem_ptr) > (int)omx->drv_ctx.ip_buf.actualcount) ) {
                 omxhdr = NULL;
                 vdec_msg->status_code = VDEC_S_EFATAL;
+                break;
             }
             if (v4l2_buf_ptr->flags & V4L2_QCOM_BUF_INPUT_UNSUPPORTED) {
                 DEBUG_PRINT_HIGH("Unsupported input");
@@ -6978,6 +7005,17 @@ int omx_vdec::async_message_process (void *context, void* message)
             if (v4l2_buf_ptr->flags & V4L2_QCOM_BUF_DATA_CORRUPT) {
                 vdec_msg->status_code = VDEC_S_INPUT_BITSTREAM_ERR;
             }
+            if (omxhdr->nFlags & OMX_BUFFERFLAG_CODECCONFIG) {
+
+                DEBUG_PRINT_LOW("Decrement codec_config buffer counter");
+                android_atomic_dec(&omx->m_queued_codec_config_count);
+                if ((android_atomic_add(0, &omx->m_queued_codec_config_count) == 0) &&
+                    BITMASK_PRESENT(&omx->m_flags, OMX_COMPONENT_FLUSH_DEFERRED)) {
+                    DEBUG_PRINT_LOW("sem post for CODEC CONFIG buffer");
+                    sem_post(&omx->m_safe_flush);
+                }
+            }
+
             omx->post_event ((unsigned int)omxhdr,vdec_msg->status_code,
                     OMX_COMPONENT_GENERATE_EBD);
             break;
