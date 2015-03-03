@@ -47,6 +47,7 @@ IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <string.h>
 #include <inttypes.h>
 #include <cstddef>
+#include <cutils/atomic.h>
 
 static ptrdiff_t x;
 
@@ -456,7 +457,8 @@ class omx_vdec: public qc_omx_component
             OMX_COMPONENT_PAUSE_PENDING          =0xB,
             OMX_COMPONENT_EXECUTE_PENDING        =0xC,
             OMX_COMPONENT_OUTPUT_FLUSH_IN_DISABLE_PENDING =0xD,
-            OMX_COMPONENT_DISABLE_OUTPUT_DEFERRED=0xE
+            OMX_COMPONENT_DISABLE_OUTPUT_DEFERRED=0xE,
+            OMX_COMPONENT_FLUSH_DEFERRED = 0xF
         };
 
         // Deferred callback identifiers
@@ -744,6 +746,7 @@ class omx_vdec: public qc_omx_component
         pthread_mutex_t       c_lock;
         //sem to handle the minimum procesing of commands
         sem_t                 m_cmd_lock;
+        sem_t                 m_safe_flush;
         bool              m_error_propogated;
         // compression format
         OMX_VIDEO_CODINGTYPE eCompressionFormat;
@@ -990,6 +993,7 @@ class omx_vdec: public qc_omx_component
         void send_codec_config();
 #endif
         OMX_TICKS m_last_rendered_TS;
+        volatile int32_t m_queued_codec_config_count;
 };
 
 #ifdef _MSM8974_
